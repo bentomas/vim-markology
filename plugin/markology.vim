@@ -45,6 +45,7 @@ if !exists('g:markology_hlline_lower') | let g:markology_hlline_lower = "0"  | e
 if !exists('g:markology_hlline_upper') | let g:markology_hlline_upper = "0"  | endif
 if !exists('g:markology_hlline_other') | let g:markology_hlline_other = "0"  | endif
 if !exists('g:markology_set_location_list_convenience_maps') | let g:markology_set_location_list_convenience_maps = 1  | endif
+if !exists('g:markology_sign_mirror' ) | let g:markology_sign_mirror = []  | endif
 
 " This is the default, and used in MarkologySetup to set up info for any
 " possible mark (not just those specified in the possibly user-supplied list
@@ -283,7 +284,7 @@ fun! s:MarkologySetup()
 
         " Define the sign with a unique highlight which will be linked when placed.
         exe 'sign define ShowMark'.nm.' '.lhltext.' text='.text.' texthl='.s:MarkologyDLink{nm}.nm
-        let b:MarkologyLink{nm} = ''
+        let g:MarkologyLink{nm} = ''
         let n = n + 1
     endw
 endf
@@ -334,6 +335,63 @@ fun! s:MarkologyToggle()
     endif
 endf
 
+function! MarkologyGetExistingSigns() abort
+  let existing_signs = {}
+
+  let lang = v:lang
+  silent! execute 'language message C'
+
+  redir => signlist
+    silent! execute 'sign place buffer='.winbufnr(0)
+  redir END
+
+  " filter out non sign lines, and convert to array
+  let lines = filter(split(signlist, '\n'), 'v:val =~ "^\\s\\+line"')
+
+  if len(lines) > 0
+    if lines[0] =~ 99999
+        call remove(lines, 0)
+    endif
+
+    for line in lines
+        let sign = matchlist(line, '\v^\s+line\=(\d+)\s+id\=(\d+)\s+name\=(\S+)')
+        if !has_key(existing_signs, sign[1])
+            " don't grab our own signs
+            if match(sign[3], '^ShowMark') < 0
+                let existing_signs[sign[1]] = sign[3]
+            endif
+        endif
+    endfor
+  endif
+
+  silent! execute 'language message' lang
+
+  return existing_signs
+endfunction
+
+function! MarkologyGetHighlightForSign(signname)
+    if !exists('s:highlight_cache')
+        let s:highlight_cache = {}
+    endif
+
+    if has_key(s:highlight_cache, a:signname)
+        return s:highlight_cache[a:signname]
+    else
+        redir => signlist
+            silent! execute 'sign list '.a:signname
+        redir END
+        let lines = split(signlist, '\n')
+        let definition = matchlist(lines[0], '\v^sign .* texthl\=(.*)')
+
+        if definition != []
+            let s:highlight_cache[a:signname] = definition[1]
+            return s:highlight_cache[a:signname]
+        else
+            return ''
+        endif
+    endif
+endfunction
+
 " Function: Markology()
 " Description: This function runs through all the marks and displays or
 " removes signs as appropriate. It is called on the CursorHold autocommand.
@@ -353,6 +411,10 @@ fun! s:Markology()
     \ || ((match(g:markology_ignore_type, "[Rr]") > -1) && (&readonly   == 1         ))
     \ || ((match(g:markology_ignore_type, "[Mm]") > -1) && (&modifiable == 0         ))
         return
+    endif
+
+    if g:markology_sign_mirror != []
+        let existing_signs = MarkologyGetExistingSigns()
     endif
 
     let n = 0
@@ -376,17 +438,39 @@ fun! s:Markology()
                 endif
 
                 " Already placed a mark, set the highlight to multiple
-                if c =~# '[a-zA-Z]' && b:MarkologyLink{mark_at{ln}} != 'MarkologyHLm'
-                    let b:MarkologyLink{mark_at{ln}} = 'MarkologyHLm'
-                    exe 'hi link '.s:MarkologyDLink{mark_at{ln}}.mark_at{ln}.' '.b:MarkologyLink{mark_at{ln}}
+                if c =~# '[a-zA-Z]' && g:MarkologyLink{mark_at{ln}} != 'MarkologyHLm'
+                    let g:MarkologyLink{mark_at{ln}} = 'MarkologyHLm'
+                    exe 'hi link '.s:MarkologyDLink{mark_at{ln}}.mark_at{ln}.' '.g:MarkologyLink{mark_at{ln}}
                 endif
             else
-                if !exists('b:MarkologyLink'.nm) || b:MarkologyLink{nm} != s:MarkologyDLink{nm}
-                    let b:MarkologyLink{nm} = s:MarkologyDLink{nm}
-                    exe 'hi link '.s:MarkologyDLink{nm}.nm.' '.b:MarkologyLink{nm}
+                let hl = s:MarkologyDLink{nm}
+
+                " check and see if this line already has another sign on it
+                if exists('existing_signs') && has_key(existing_signs, ln)
+                    " it does!
+                    let existing_hl = MarkologyGetHighlightForSign(existing_signs[ln])
+                    " check and see if the existing sign's highlight is in our
+                    " list of highlights to mirror
+                    if index(g:markology_sign_mirror, existing_hl) > -1
+                        "it is!
+                        let hl = existing_hl
+                    endi
                 endif
+
+
+                " check and see if we need to reset the highlight (so either we
+                " haven't set it before or it is different)
+                if !exists('g:MarkologyLink'.nm) || g:MarkologyLink{nm} != hl
+                    let g:MarkologyLink{nm} = hl
+                    exe 'hi link '.s:MarkologyDLink{nm}.nm.' '.g:MarkologyLink{nm}
+                endif
+
                 let mark_at{ln} = nm
-                if !exists('b:placed_'.nm) || b:placed_{nm} != ln
+
+                let notplaced = !exists('b:placed_'.nm)
+                let placemoved = (exists('b:placed_'.nm) && b:placed_{nm} != ln)
+                let maybe_overwritten = (exists('existing_signs') && has_key(existing_signs, ln))
+                if notplaced || placemoved || maybe_overwritten
                     exe 'sign unplace '.id.' buffer='.winbufnr(0)
                     exe 'sign place '.id.' name=ShowMark'.nm.' line='.ln.' buffer='.winbufnr(0)
                     let b:placed_{nm} = ln
